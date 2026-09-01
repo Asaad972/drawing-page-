@@ -19,7 +19,6 @@
     --accent-ink: #ffffff;
     --urgent: #e8532e;
     --urgent-ink: #ffffff;
-    --paper: #fbfaf6;
     --shadow: rgba(30, 27, 41, 0.18);
     --font-display: "Bricolage Grotesque", system-ui, sans-serif;
     --font-body: "Manrope", system-ui, sans-serif;
@@ -66,7 +65,7 @@
   body {
     position: fixed;
     inset: 0;
-    background: var(--bg);
+    background: #fbfaf6;
     color: var(--ink);
     font-family: var(--font-body);
     -webkit-user-select: none;
@@ -79,20 +78,12 @@
     inset: 0;
     overflow: hidden;
     touch-action: none;
+    background: #fbfaf6;
     cursor: crosshair;
   }
   #stage.pan { cursor: grab; }
   #stage.pan:active { cursor: grabbing; }
-
-  #board {
-    position: absolute;
-    top: 0;
-    left: 0;
-    transform-origin: 0 0;
-    background: var(--paper);
-    box-shadow: 0 10px 50px var(--shadow);
-    border-radius: 2px;
-  }
+  #board { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
   .hud { position: absolute; z-index: 5; transition: opacity 0.2s ease; }
   .hud.gone { opacity: 0; pointer-events: none; }
@@ -181,7 +172,7 @@
     border-color: var(--ink);
     box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink);
   }
-  .swatch.eraser { background: var(--paper) !important; display: grid; place-items: center; font-size: 14px; }
+  .swatch.eraser { background: #fbfaf6 !important; display: grid; place-items: center; font-size: 14px; }
 
   .pill {
     flex: 0 0 auto;
@@ -195,6 +186,7 @@
     cursor: pointer;
     padding: 0;
     font-size: 15px;
+    color: var(--ink);
   }
   .pill[aria-pressed="true"] {
     border-color: var(--accent);
@@ -220,6 +212,22 @@
     white-space: nowrap;
   }
   .txt-btn.danger { color: var(--urgent); border-color: var(--urgent); }
+
+  #zoomPct {
+    flex: 0 0 auto;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 12px;
+    min-width: 48px;
+    text-align: center;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 9px 4px;
+    background: var(--surface-2);
+    color: var(--ink);
+  }
 
   @media (min-width: 760px) {
     .swatch { width: 26px; height: 26px; }
@@ -247,7 +255,7 @@
     align-items: center;
   }
   #exp.on { display: flex; }
-  #exp img { max-width: min(560px, 100%); border-radius: 12px; border: 1px solid var(--line); }
+  #exp img { max-width: min(560px, 100%); border-radius: 12px; border: 1px solid var(--line); background: #fbfaf6; }
   #exp .tip {
     max-width: 560px;
     background: var(--surface-2);
@@ -257,7 +265,7 @@
     line-height: 1.5;
   }
 
-  button:focus-visible, .swatch:focus-visible, .pill:focus-visible {
+  button:focus-visible, .swatch:focus-visible, .pill:focus-visible, #zoomPct:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
@@ -277,6 +285,11 @@
   <div class="hud" id="dock">
     <div class="grp" id="tools" role="group" aria-label="Tool"></div>
     <div class="grp" id="sizes" role="group" aria-label="Brush size"></div>
+    <div class="grp" role="group" aria-label="Zoom">
+      <button class="pill" id="zoomOut" type="button" aria-label="Zoom out">&#8722;</button>
+      <button id="zoomPct" type="button" aria-label="Reset zoom to 100%">100%</button>
+      <button class="pill" id="zoomIn" type="button" aria-label="Zoom in">&#43;</button>
+    </div>
     <div class="brk"></div>
     <div class="grp" id="swatches" role="group" aria-label="Colour"></div>
     <div class="brk"></div>
@@ -299,110 +312,254 @@
   (function () {
     "use strict";
 
+    var PAPER = "#fbfaf6";
+    var GRID = "rgba(30,27,41,0.10)";
+
     // ---- timer -----------------------------------------------------
     var qs = new URLSearchParams(location.search);
     var total = parseInt(qs.get("t"), 10);
     if (!total || total <= 0) total = 150;
     var deadline = Date.now() + total * 1000;
     var timerEl = document.getElementById("timer");
-    function tick() {
+    function tickTimer() {
       var r = Math.max(0, Math.round((deadline - Date.now()) / 1000));
       timerEl.textContent = r <= 0 ? "Time's up" : Math.floor(r / 60) + ":" + String(r % 60).padStart(2, "0");
       timerEl.classList.toggle("urgent", r <= 30);
       if (r <= 0) clearInterval(th);
     }
-    tick();
-    var th = setInterval(tick, 250);
+    tickTimer();
+    var th = setInterval(tickTimer, 250);
 
-    // ---- canvas --------------------------------------------------
-    var CW = 1600, CH = 1200;
+    // ---- canvas + infinite view ---------------------------------
     var stage = document.getElementById("stage");
     var canvas = document.getElementById("board");
-    canvas.width = CW; canvas.height = CH;
-    canvas.style.width = CW + "px"; canvas.style.height = CH + "px";
-    var ctx = canvas.getContext("2d", { willReadFrequently: true });
-    ctx.lineCap = "round"; ctx.lineJoin = "round";
-    function paintBg() { ctx.fillStyle = "#fbfaf6"; ctx.fillRect(0, 0, CW, CH); }
-    paintBg();
+    var ctx = canvas.getContext("2d");
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var rect = stage.getBoundingClientRect();
+    // view maps world -> screen:  screen = world * scale + {x,y}
+    var view = { x: rect.width / 2, y: rect.height / 2, scale: 1 };
 
-    // ---- pan / zoom -------------------------------------------
-    var stageRect = stage.getBoundingClientRect();
-    var view = { x: 0, y: 0, scale: 1 };
-    function applyView() {
-      canvas.style.transform = "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")";
+    function sizeCanvas() {
+      rect = stage.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
     }
     function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-    function fitView() {
-      stageRect = stage.getBoundingClientRect();
-      var s = clamp(Math.min(stageRect.width / CW, stageRect.height / CH) * 0.92, 0.05, 4);
-      view.scale = s;
-      view.x = (stageRect.width - CW * s) / 2;
-      view.y = (stageRect.height - CH * s) / 2;
-      applyView();
-    }
-    function coverView() {
-      // fill the screen with paper (like an infinite canvas); overflow is pannable
-      stageRect = stage.getBoundingClientRect();
-      var s = clamp(Math.max(stageRect.width / CW, stageRect.height / CH), 0.08, 8);
-      view.scale = s;
-      view.x = (stageRect.width - CW * s) / 2;
-      view.y = (stageRect.height - CH * s) / 2;
-      applyView();
-    }
-    function zoomAt(clientX, clientY, k) {
-      var sx = clientX - stageRect.left, sy = clientY - stageRect.top;
-      var ns = clamp(view.scale * k, 0.08, 8);
-      var eff = ns / view.scale;
-      view.x = sx - (sx - view.x) * eff;
-      view.y = sy - (sy - view.y) * eff;
-      view.scale = ns;
-    }
-    coverView();
-    window.addEventListener("resize", function () {
-      stageRect = stage.getBoundingClientRect();
-      applyView();
-    });
-    stage.addEventListener("wheel", function (e) {
-      e.preventDefault();
-      zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012));
-      applyView();
-    }, { passive: false });
-    stage.addEventListener("contextmenu", function (e) { e.preventDefault(); });
-
-    function toCanvas(clientX, clientY) {
+    function toWorld(clientX, clientY) {
       return {
-        x: (clientX - stageRect.left - view.x) / view.scale,
-        y: (clientY - stageRect.top - view.y) / view.scale
+        x: (clientX - rect.left - view.x) / view.scale,
+        y: (clientY - rect.top - view.y) / view.scale
       };
     }
-
-    // ---- history (PNG data URLs keep memory tiny) -----------
-    var history = [], redo = [], HMAX = 14;
-    function pushHist() {
-      history.push(canvas.toDataURL("image/png"));
-      if (history.length > HMAX) history.shift();
+    function zoomAtPoint(px, py, k) {
+      var ns = clamp(view.scale * k, 0.1, 30);
+      var eff = ns / view.scale;
+      view.x = px - (px - view.x) * eff;
+      view.y = py - (py - view.y) * eff;
+      view.scale = ns;
     }
-    function commit() { pushHist(); redo.length = 0; }
-    function restore(url) {
-      var img = new Image();
-      img.onload = function () { ctx.clearRect(0, 0, CW, CH); ctx.drawImage(img, 0, 0, CW, CH); };
-      img.src = url;
+    var zoomPctEl = document.getElementById("zoomPct");
+    function updateZoom() { zoomPctEl.textContent = Math.round(view.scale * 100) + "%"; }
+
+    // ---- scene (vector elements, world coordinates) ------------
+    // stroke: {type:'stroke', color, size, pts:[{x,y}...]}
+    // shape : {type:'shape', kind:'line'|'rect'|'circle', color, size, a:{x,y}, b:{x,y}}
+    // image : {type:'image', src, x, y, w, h, img}   (used by the fill bucket)
+    var scene = [];
+    var live = null;
+    var acts = [], undone = [], ACTS_MAX = 80;
+
+    function pushAdd(el) {
+      scene.push(el);
+      acts.push({ t: "add", el: el });
+      if (acts.length > ACTS_MAX) acts.shift();
+      undone.length = 0;
+      render();
+    }
+    function doClear() {
+      if (!scene.length) return;
+      acts.push({ t: "clear", els: scene.slice() });
+      if (acts.length > ACTS_MAX) acts.shift();
+      scene.length = 0;
+      undone.length = 0;
+      render();
     }
     function undo() {
-      if (history.length <= 1) return;
-      redo.push(history.pop());
-      if (redo.length > HMAX) redo.shift();
-      restore(history[history.length - 1]);
+      var a = acts.pop();
+      if (!a) return;
+      if (a.t === "add") scene.pop();
+      else scene = a.els.slice();
+      undone.push(a);
+      render();
     }
     function redoFn() {
-      if (!redo.length) return;
-      var u = redo.pop();
-      history.push(u);
-      if (history.length > HMAX) history.shift();
-      restore(u);
+      var a = undone.pop();
+      if (!a) return;
+      if (a.t === "add") scene.push(a.el);
+      else scene.length = 0;
+      acts.push(a);
+      render();
     }
-    function clearBoard() { paintBg(); commit(); }
-    pushHist();
+
+    function hexRgb(h) {
+      h = h.replace("#", "");
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+
+    // ---- rendering -------------------------------------------
+    function drawEl(c, el) {
+      if (el.type === "stroke") {
+        var p = el.pts;
+        if (!p.length) return;
+        c.strokeStyle = el.color;
+        c.fillStyle = el.color;
+        c.lineWidth = el.size;
+        c.lineCap = "round";
+        c.lineJoin = "round";
+        if (p.length === 1) {
+          c.beginPath();
+          c.arc(p[0].x, p[0].y, Math.max(0.1, el.size / 2), 0, 6.2832);
+          c.fill();
+          return;
+        }
+        c.beginPath();
+        c.moveTo(p[0].x, p[0].y);
+        for (var i = 1; i < p.length - 1; i++) {
+          var mx = (p[i].x + p[i + 1].x) / 2, my = (p[i].y + p[i + 1].y) / 2;
+          c.quadraticCurveTo(p[i].x, p[i].y, mx, my);
+        }
+        c.lineTo(p[p.length - 1].x, p[p.length - 1].y);
+        c.stroke();
+      } else if (el.type === "shape") {
+        c.strokeStyle = el.color;
+        c.lineWidth = el.size;
+        c.lineCap = "round";
+        c.lineJoin = "round";
+        c.beginPath();
+        if (el.kind === "line") {
+          c.moveTo(el.a.x, el.a.y);
+          c.lineTo(el.b.x, el.b.y);
+        } else if (el.kind === "rect") {
+          c.rect(Math.min(el.a.x, el.b.x), Math.min(el.a.y, el.b.y),
+                 Math.abs(el.b.x - el.a.x), Math.abs(el.b.y - el.a.y));
+        } else {
+          var cx = (el.a.x + el.b.x) / 2, cy = (el.a.y + el.b.y) / 2;
+          c.ellipse(cx, cy, Math.max(0.1, Math.abs(el.b.x - el.a.x) / 2),
+                    Math.max(0.1, Math.abs(el.b.y - el.a.y) / 2), 0, 0, 6.2832);
+        }
+        c.stroke();
+      } else if (el.type === "image" && el.img && el.img.complete && el.img.naturalWidth) {
+        c.drawImage(el.img, el.x, el.y, el.w, el.h);
+      }
+    }
+
+    function drawGrid() {
+      var g = 42 * view.scale;
+      if (g < 9) return; // too dense when far out, skip
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = GRID;
+      var ox = ((view.x % g) + g) % g;
+      var oy = ((view.y % g) + g) % g;
+      var r = view.scale >= 1 ? 1.2 : 1;
+      for (var x = ox; x < rect.width; x += g) {
+        for (var y = oy; y < rect.height; y += g) {
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, 6.2832);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+
+    var rafPending = false;
+    function render() {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(paint);
+    }
+    function paint() {
+      rafPending = false;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = PAPER;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      drawGrid();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.translate(view.x, view.y);
+      ctx.scale(view.scale, view.scale);
+      for (var i = 0; i < scene.length; i++) drawEl(ctx, scene[i]);
+      if (live) drawEl(ctx, live);
+    }
+    function applyRender() { render(); updateZoom(); }
+
+    sizeCanvas();
+    updateZoom();
+    render();
+
+    window.addEventListener("resize", function () {
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      sizeCanvas();
+      render();
+    });
+
+    // ---- content bounds / fit / export -----------------------
+    function contentBounds() {
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+      function ext(x, y) { any = true; if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y; }
+      scene.forEach(function (el) {
+        if (el.type === "stroke") {
+          el.pts.forEach(function (p) { ext(p.x - el.size, p.y - el.size); ext(p.x + el.size, p.y + el.size); });
+        } else if (el.type === "shape") {
+          ext(Math.min(el.a.x, el.b.x) - el.size, Math.min(el.a.y, el.b.y) - el.size);
+          ext(Math.max(el.a.x, el.b.x) + el.size, Math.max(el.a.y, el.b.y) + el.size);
+        } else if (el.type === "image") {
+          ext(el.x, el.y); ext(el.x + el.w, el.y + el.h);
+        }
+      });
+      return any ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null;
+    }
+    function fitContent() {
+      rect = stage.getBoundingClientRect();
+      var b = contentBounds();
+      if (!b) {
+        view.scale = 1;
+        view.x = rect.width / 2;
+        view.y = rect.height / 2;
+        applyRender();
+        return;
+      }
+      var pad = 64;
+      var s = clamp(Math.min(rect.width / (b.w + pad * 2), rect.height / (b.h + pad * 2)), 0.1, 4);
+      view.scale = s;
+      view.x = rect.width / 2 - (b.x + b.w / 2) * s;
+      view.y = rect.height / 2 - (b.y + b.h / 2) * s;
+      applyRender();
+    }
+    function exportPNG() {
+      var b = contentBounds();
+      var out = document.createElement("canvas");
+      var oc;
+      if (b) {
+        var pad = 44;
+        var scaleOut = clamp(1700 / (b.w + pad * 2), 1, 3);
+        out.width = Math.max(1, Math.round((b.w + pad * 2) * scaleOut));
+        out.height = Math.max(1, Math.round((b.h + pad * 2) * scaleOut));
+        oc = out.getContext("2d");
+        oc.fillStyle = PAPER;
+        oc.fillRect(0, 0, out.width, out.height);
+        oc.scale(scaleOut, scaleOut);
+        oc.translate(pad - b.x, pad - b.y);
+        scene.forEach(function (el) { drawEl(oc, el); });
+      } else {
+        out.width = Math.max(1, Math.round(rect.width));
+        out.height = Math.max(1, Math.round(rect.height));
+        oc = out.getContext("2d");
+        oc.fillStyle = PAPER;
+        oc.fillRect(0, 0, out.width, out.height);
+      }
+      return out.toDataURL("image/png");
+    }
 
     // ---- palette / tools ----------------------------------
     var COLORS = [
@@ -475,6 +632,9 @@
 
     document.getElementById("undoBtn").addEventListener("click", undo);
     document.getElementById("redoBtn").addEventListener("click", redoFn);
+    document.getElementById("zoomIn").addEventListener("click", function () { zoomAtPoint(rect.width / 2, rect.height / 2, 1.25); applyRender(); });
+    document.getElementById("zoomOut").addEventListener("click", function () { zoomAtPoint(rect.width / 2, rect.height / 2, 0.8); applyRender(); });
+    zoomPctEl.addEventListener("click", function () { zoomAtPoint(rect.width / 2, rect.height / 2, 1 / view.scale); applyRender(); });
 
     var clB = document.getElementById("clearBtn"), armed = false, armT = null;
     function disarm() {
@@ -488,135 +648,156 @@
         return;
       }
       disarm();
-      clearBoard();
+      doClear();
     });
 
     // ---- drawing ------------------------------------------
-    var SM = 0.6;
-    var drawing = false, last = null, smooth = null;
-    var shapeStart = null, shapeSnap = null;
+    var SM = 0.55;
+    var drawing = false, smooth = null, lastPushed = null;
 
-    function strokeTo(p) {
-      ctx.strokeStyle = st.erasing ? "#fbfaf6" : st.color;
-      ctx.lineWidth = st.erasing ? st.size * 2.4 : st.size;
-      ctx.beginPath();
-      ctx.moveTo(last.x, last.y);
-      ctx.lineTo(p.x, p.y);
-      ctx.stroke();
-      last = { x: p.x, y: p.y };
-    }
-    function drawShape(kind, a, b) {
-      ctx.strokeStyle = st.erasing ? "#fbfaf6" : st.color;
-      ctx.lineWidth = st.erasing ? st.size * 2.4 : st.size;
-      ctx.beginPath();
-      if (kind === "line") {
-        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
-      } else if (kind === "rect") {
-        ctx.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-      } else if (kind === "circle") {
-        var cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-        var rx = Math.max(0.5, Math.abs(b.x - a.x) / 2), ry = Math.max(0.5, Math.abs(b.y - a.y) / 2);
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-      }
-      ctx.stroke();
-    }
-    function hexRgb(h) {
-      h = h.replace("#", "");
-      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-    }
-    function floodFill(sx, sy) {
-      sx = Math.round(sx); sy = Math.round(sy);
-      if (sx < 0 || sy < 0 || sx >= CW || sy >= CH) return;
-      var im = ctx.getImageData(0, 0, CW, CH), d = im.data;
-      var si = (sy * CW + sx) * 4, tr = d[si], tg = d[si + 1], tb = d[si + 2];
-      var f = st.erasing ? [251, 250, 246] : hexRgb(st.color);
-      if (Math.abs(tr - f[0]) + Math.abs(tg - f[1]) + Math.abs(tb - f[2]) < 8) return;
-      var tol = 42, seen = new Uint8Array(CW * CH), stk = [sy * CW + sx];
-      while (stk.length) {
-        var p = stk.pop();
-        if (seen[p]) continue;
-        seen[p] = 1;
-        var i = p * 4;
-        if (Math.abs(d[i] - tr) + Math.abs(d[i + 1] - tg) + Math.abs(d[i + 2] - tb) > tol) continue;
-        d[i] = f[0]; d[i + 1] = f[1]; d[i + 2] = f[2]; d[i + 3] = 255;
-        var x = p % CW, y = (p - x) / CW;
-        if (x + 1 < CW) stk.push(p + 1);
-        if (x - 1 >= 0) stk.push(p - 1);
-        if (y + 1 < CH) stk.push(p + CW);
-        if (y - 1 >= 0) stk.push(p - CW);
-      }
-      ctx.putImageData(im, 0, 0);
-      commit();
-    }
-
-    function startDraw(cx, cy) {
+    function beginStroke(w) {
       drawing = true;
-      last = { x: cx, y: cy };
       if (tool === "pen") {
-        smooth = { x: cx, y: cy };
-        ctx.fillStyle = st.erasing ? "#fbfaf6" : st.color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, (st.erasing ? st.size * 2.4 : st.size) / 2, 0, Math.PI * 2);
-        ctx.fill();
+        smooth = { x: w.x, y: w.y };
+        lastPushed = { x: w.x, y: w.y };
+        live = {
+          type: "stroke",
+          color: st.erasing ? PAPER : st.color,
+          size: st.erasing ? st.size * 2.4 : st.size,
+          pts: [{ x: w.x, y: w.y }]
+        };
       } else {
-        shapeStart = { x: cx, y: cy };
-        shapeSnap = ctx.getImageData(0, 0, CW, CH);
+        live = {
+          type: "shape",
+          kind: tool,
+          color: st.erasing ? PAPER : st.color,
+          size: st.erasing ? st.size * 2.4 : st.size,
+          a: { x: w.x, y: w.y },
+          b: { x: w.x, y: w.y }
+        };
       }
+      render();
     }
-    function moveDraw(cx, cy) {
-      if (tool === "pen") {
-        smooth.x += (cx - smooth.x) * SM;
-        smooth.y += (cy - smooth.y) * SM;
-        strokeTo({ x: smooth.x, y: smooth.y });
-      } else if (shapeSnap) {
-        ctx.putImageData(shapeSnap, 0, 0);
-        drawShape(tool, shapeStart, { x: cx, y: cy });
-      }
-    }
-    function endDraw(cx, cy, keep) {
-      if (!drawing) return;
-      if (tool !== "pen" && shapeSnap) {
-        ctx.putImageData(shapeSnap, 0, 0);
-        if (keep) { drawShape(tool, shapeStart, { x: cx, y: cy }); commit(); }
+    function extendStroke(w) {
+      if (!drawing || !live) return;
+      if (live.type === "stroke") {
+        smooth.x += (w.x - smooth.x) * SM;
+        smooth.y += (w.y - smooth.y) * SM;
+        var dx = smooth.x - lastPushed.x, dy = smooth.y - lastPushed.y;
+        if (dx * dx + dy * dy >= 0.6 / (view.scale * view.scale)) {
+          live.pts.push({ x: smooth.x, y: smooth.y });
+          lastPushed = { x: smooth.x, y: smooth.y };
+        }
       } else {
-        if (tool === "pen" && keep) strokeTo({ x: cx, y: cy });
-        if (keep) commit();
+        live.b = { x: w.x, y: w.y };
       }
-      drawing = false;
-      shapeSnap = null;
+      render();
     }
-    function abortDraw() {
-      if (!drawing) return;
-      if (tool !== "pen" && shapeSnap) ctx.putImageData(shapeSnap, 0, 0);
+    function endStroke(keep) {
+      if (!drawing) { live = null; return; }
       drawing = false;
-      shapeSnap = null;
+      var el = live;
+      live = null;
+      if (!keep || !el) { render(); return; }
+      if (el.type === "shape") {
+        var moved = Math.abs(el.b.x - el.a.x) > 1.5 / view.scale || Math.abs(el.b.y - el.a.y) > 1.5 / view.scale;
+        if (!moved) { render(); return; }
+      }
+      pushAdd(el);
+    }
+    function abortStroke() {
+      drawing = false;
+      live = null;
+      render();
+    }
+
+    // flood-fill bucket: rasterise the current view, fill, keep it as a
+    // world-anchored image element so it survives future pan / zoom
+    function doFill(clientX, clientY) {
+      try {
+        var w = Math.max(1, Math.round(rect.width));
+        var h = Math.max(1, Math.round(rect.height));
+        var off = document.createElement("canvas");
+        off.width = w; off.height = h;
+        var o = off.getContext("2d", { willReadFrequently: true });
+        o.fillStyle = PAPER; o.fillRect(0, 0, w, h);
+        o.save();
+        o.translate(view.x, view.y);
+        o.scale(view.scale, view.scale);
+        for (var i = 0; i < scene.length; i++) drawEl(o, scene[i]);
+        o.restore();
+
+        var sx = Math.round(clientX - rect.left), sy = Math.round(clientY - rect.top);
+        if (sx < 0 || sy < 0 || sx >= w || sy >= h) return;
+        var src = o.getImageData(0, 0, w, h).data;
+        var si = (sy * w + sx) * 4;
+        var tr = src[si], tg = src[si + 1], tb = src[si + 2];
+        var f = st.erasing ? hexRgb(PAPER) : hexRgb(st.color);
+        if (Math.abs(tr - f[0]) + Math.abs(tg - f[1]) + Math.abs(tb - f[2]) < 10) return;
+
+        var stamp = document.createElement("canvas");
+        stamp.width = w; stamp.height = h;
+        var scx = stamp.getContext("2d");
+        var outImg = scx.createImageData(w, h), out = outImg.data;
+        var seen = new Uint8Array(w * h);
+        var stack = [sy * w + sx];
+        var tol = 46;
+        while (stack.length) {
+          var p = stack.pop();
+          if (seen[p]) continue;
+          seen[p] = 1;
+          var k = p * 4;
+          if (Math.abs(src[k] - tr) + Math.abs(src[k + 1] - tg) + Math.abs(src[k + 2] - tb) > tol) continue;
+          out[k] = f[0]; out[k + 1] = f[1]; out[k + 2] = f[2]; out[k + 3] = 255;
+          var x = p % w, y = (p - x) / w;
+          if (x + 1 < w) stack.push(p + 1);
+          if (x - 1 >= 0) stack.push(p - 1);
+          if (y + 1 < h) stack.push(p + w);
+          if (y - 1 >= 0) stack.push(p - w);
+        }
+        scx.putImageData(outImg, 0, 0);
+        var tl = toWorld(rect.left, rect.top);
+        var br = toWorld(rect.left + rect.width, rect.top + rect.height);
+        var el = { type: "image", src: stamp.toDataURL("image/png"), x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+        el.img = new Image();
+        el.img.onload = render;
+        el.img.src = el.src;
+        pushAdd(el);
+      } catch (e) { /* ignore fill failures */ }
     }
 
     // ---- pointers / gestures ----------------------------
     var ptrs = new Map();
     var pinch = null;
     var panStart = null;
-    var pending = null; // one finger down, not yet a stroke (so a 2nd finger = pan/zoom, not a smear)
+    var pending = null;
 
-    function midDist(a, b) { var dx = a.x - b.x, dy = a.y - b.y; return Math.hypot(dx, dy); }
+    function midDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
     stage.addEventListener("pointerdown", function (e) {
       try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+      rect = stage.getBoundingClientRect();
       ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if (ptrs.size === 2) {
         pending = null;
-        abortDraw();
+        abortStroke();
+        panStart = null;
         var a = Array.from(ptrs.values());
         pinch = { d: midDist(a[0], a[1]), mx: (a[0].x + a[1].x) / 2, my: (a[0].y + a[1].y) / 2 };
         return;
       }
       if (ptrs.size !== 1) return;
 
-      var p = toCanvas(e.clientX, e.clientY);
-      if (tool === "fill") { floodFill(p.x, p.y); return; }
-      if (tool === "pan") { panStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; return; }
-      pending = { sx: e.clientX, sy: e.clientY, cx: p.x, cy: p.y };
+      if (tool === "pan") {
+        panStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+        return;
+      }
+      if (tool === "fill") {
+        doFill(e.clientX, e.clientY);
+        return;
+      }
+      pending = { sx: e.clientX, sy: e.clientY, w: toWorld(e.clientX, e.clientY) };
     });
 
     stage.addEventListener("pointermove", function (e) {
@@ -627,32 +808,28 @@
         var a = Array.from(ptrs.values());
         var nd = midDist(a[0], a[1]);
         var nmx = (a[0].x + a[1].x) / 2, nmy = (a[0].y + a[1].y) / 2;
-        zoomAt(nmx, nmy, nd / (pinch.d || nd));
+        zoomAtPoint(nmx - rect.left, nmy - rect.top, nd / (pinch.d || nd));
         view.x += nmx - pinch.mx;
         view.y += nmy - pinch.my;
-        applyView();
         pinch.d = nd; pinch.mx = nmx; pinch.my = nmy;
+        applyRender();
         return;
       }
       if (panStart) {
         view.x = panStart.vx + (e.clientX - panStart.x);
         view.y = panStart.vy + (e.clientY - panStart.y);
-        applyView();
+        applyRender();
         return;
       }
       if (pending) {
         if (Math.hypot(e.clientX - pending.sx, e.clientY - pending.sy) > 4) {
-          startDraw(pending.cx, pending.cy);
+          beginStroke(pending.w);
           pending = null;
-          var q = toCanvas(e.clientX, e.clientY);
-          moveDraw(q.x, q.y);
+          extendStroke(toWorld(e.clientX, e.clientY));
         }
         return;
       }
-      if (drawing) {
-        var p = toCanvas(e.clientX, e.clientY);
-        moveDraw(p.x, p.y);
-      }
+      if (drawing) extendStroke(toWorld(e.clientX, e.clientY));
     });
 
     function up(e) {
@@ -663,21 +840,30 @@
       if (panStart && ptrs.size === 0) panStart = null;
 
       if (pending && ptrs.size === 0) {
-        startDraw(pending.cx, pending.cy);
-        endDraw(pending.cx, pending.cy, true); // a tap = one dot
+        beginStroke(pending.w);   // a tap = a single dot
+        endStroke(true);
         pending = null;
         return;
       }
-      if (drawing && ptrs.size === 0) {
-        var p = toCanvas(e.clientX, e.clientY);
-        endDraw(p.x, p.y, e.type === "pointerup");
-      }
+      if (drawing && ptrs.size === 0) endStroke(e.type === "pointerup");
     }
     stage.addEventListener("pointerup", up);
     stage.addEventListener("pointercancel", up);
 
+    stage.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      if (e.ctrlKey || Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        zoomAtPoint(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.0016));
+      } else {
+        view.x -= e.deltaX;
+        view.y -= e.deltaY;
+      }
+      applyRender();
+    }, { passive: false });
+    stage.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
     // ---- HUD -------------------------------------------
-    document.getElementById("fitBtn").addEventListener("click", fitView);
+    document.getElementById("fitBtn").addEventListener("click", fitContent);
 
     var hudEls = Array.prototype.slice.call(document.querySelectorAll(".hud"));
     document.getElementById("hideBtn").addEventListener("click", function () {
@@ -691,7 +877,7 @@
 
     var exp = document.getElementById("exp"), expImg = document.getElementById("expImg");
     document.getElementById("doneBtn").addEventListener("click", function () {
-      expImg.src = canvas.toDataURL("image/png");
+      expImg.src = exportPNG();
       exp.classList.add("on");
     });
     document.getElementById("backBtn").addEventListener("click", function () {
