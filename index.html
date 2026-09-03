@@ -165,9 +165,19 @@
     overflow-y: hidden;
     max-width: min(520px, calc(100vw - 44px));
     padding-bottom: 2px;
-    scrollbar-width: none;
+    scrollbar-width: thin;
   }
-  #swatches::-webkit-scrollbar { display: none; }
+  #swatches::-webkit-scrollbar { height: 5px; }
+  #swatches::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  /* roomy screens: no scrolling, just wrap the whole palette into rows */
+  @media (min-width: 640px) {
+    #swatches {
+      flex-wrap: wrap;
+      overflow: visible;
+      max-width: 340px;
+      justify-content: center;
+    }
+  }
 
   .swatch {
     flex: 0 0 auto;
@@ -640,6 +650,13 @@
     erB.setAttribute("aria-label", "Eraser"); erB.setAttribute("aria-pressed", "false");
     erB.addEventListener("click", function () { st.erasing = true; setPressed(swEls.concat([erB]), erB); });
     swWrap.appendChild(erB);
+
+    // mouse wheel scrolls the palette sideways when it's a strip (no visible bar needed)
+    swWrap.addEventListener("wheel", function (e) {
+      if (swWrap.scrollWidth <= swWrap.clientWidth) return;
+      e.preventDefault();
+      swWrap.scrollLeft += (e.deltaY || e.deltaX);
+    }, { passive: false });
 
     var szWrap = document.getElementById("sizes"), szEls = [];
     SIZES.forEach(function (sz, i) {
