@@ -345,6 +345,15 @@
     cursor: pointer;
     background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
   }
+  .cp-alpha {
+    position: relative;
+    width: 100%;
+    height: 22px;
+    border-radius: 999px;
+    touch-action: none;
+    cursor: pointer;
+    background: repeating-conic-gradient(#c9c9c9 0% 25%, #fff 0% 50%) 0 0 / 12px 12px;
+  }
   .cp-knob {
     position: absolute;
     width: 18px;
@@ -442,6 +451,7 @@
     <div class="cp-card" role="dialog" aria-label="Pick a colour">
       <div class="cp-sat" id="cpSat"><span class="cp-knob" id="cpSatKnob"></span></div>
       <div class="cp-hue" id="cpHue"><span class="cp-hknob" id="cpHueKnob"></span></div>
+      <div class="cp-alpha" id="cpAlpha"><span class="cp-hknob" id="cpAlphaKnob"></span></div>
       <div class="cp-row">
         <span class="cp-prev" id="cpPrev"></span>
         <input class="cp-hex" id="cpHex" maxlength="7" spellcheck="false" autocomplete="off" aria-label="Hex colour">
@@ -551,6 +561,12 @@
 
     // ---- rendering -------------------------------------------
     function drawEl(c, el) {
+      c.save();
+      c.globalAlpha = el.alpha == null ? 1 : el.alpha;
+      _drawEl(c, el);
+      c.restore();
+    }
+    function _drawEl(c, el) {
       if (el.type === "stroke") {
         var p = el.pts;
         if (!p.length) return;
@@ -716,7 +732,7 @@
       ["Brown", "#8a5a3c"], ["Tan", "#c99a6a"]
     ];
     var SIZES = [2, 5, 10, 20];
-    var st = { color: COLORS[0][1], size: SIZES[1], erasing: false };
+    var st = { color: COLORS[0][1], size: SIZES[1], erasing: false, alpha: 1 };
     var tool = "pen";
 
     function setPressed(list, active) {
@@ -730,7 +746,7 @@
       b.setAttribute("aria-label", c[0]);
       b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
       b.addEventListener("click", function () {
-        st.color = c[1]; st.erasing = false; setPressed(swEls.concat([customB, erB]), b);
+        st.color = c[1]; st.alpha = 1; st.erasing = false; setPressed(swEls.concat([customB, erB]), b);
       });
       swWrap.appendChild(b); swEls.push(b);
     });
@@ -741,15 +757,19 @@
     customB.className = "swatch custom";
     customB.setAttribute("aria-label", "Custom colour");
     customB.setAttribute("aria-pressed", "false");
-    var customHex = "#e8352b";
-    function useCustom(hex) {
+    var customHex = "#e8352b", customAlpha = 1;
+    function useCustom(hex, alpha) {
       customHex = hex;
+      if (alpha != null) customAlpha = alpha;
       st.color = hex;
+      st.alpha = customAlpha;
       st.erasing = false;
       customB.style.background = hex;
       setPressed(swEls.concat([customB, erB]), customB);
     }
-    customB.addEventListener("click", function () { openPicker(st.erasing ? customHex : (st.color || customHex)); });
+    customB.addEventListener("click", function () {
+      openPicker(st.erasing ? customHex : (st.color || customHex), st.erasing ? customAlpha : st.alpha);
+    });
     swWrap.appendChild(customB); swEls.push(customB);
 
     var erB = document.createElement("button");
@@ -769,9 +789,11 @@
     var cp = document.getElementById("cpick");
     var cpSat = document.getElementById("cpSat"), cpSatKnob = document.getElementById("cpSatKnob");
     var cpHue = document.getElementById("cpHue"), cpHueKnob = document.getElementById("cpHueKnob");
+    var cpAlpha = document.getElementById("cpAlpha"), cpAlphaKnob = document.getElementById("cpAlphaKnob");
     var cpPrev = document.getElementById("cpPrev"), cpHex = document.getElementById("cpHex");
     var cpEye = document.getElementById("cpEye"), cpDone = document.getElementById("cpDone");
-    var hsv = { h: 0, s: 1, v: 1 };
+    var hsv = { h: 0, s: 1, v: 1, a: 1 };
+    var CHECKER = "repeating-conic-gradient(#c9c9c9 0% 25%, #fff 0% 50%) 0 0 / 12px 12px";
 
     function hsv2rgb(h, s, v) {
       h = ((h % 360) + 360) % 360 / 60;
@@ -813,9 +835,14 @@
       cpHueKnob.style.left = (hsv.h / 360 * cpHue.getBoundingClientRect().width) + "px";
       var rgb = hsv2rgb(hsv.h, hsv.s, hsv.v);
       var hex = rgb2hex(rgb[0], rgb[1], rgb[2]);
-      cpPrev.style.background = hex;
+      var csv = rgb[0] + "," + rgb[1] + "," + rgb[2];
+      cpAlpha.style.background =
+        "linear-gradient(to right, rgba(" + csv + ",0), rgb(" + csv + "))," + CHECKER;
+      cpAlphaKnob.style.left = (hsv.a * cpAlpha.getBoundingClientRect().width) + "px";
+      cpPrev.style.background =
+        "linear-gradient(rgba(" + csv + "," + hsv.a + "), rgba(" + csv + "," + hsv.a + "))," + CHECKER;
       if (document.activeElement !== cpHex) cpHex.value = hex.toUpperCase();
-      if (commit !== false) useCustom(hex);
+      if (commit !== false) useCustom(hex, hsv.a);
     }
 
     function dragArea(el, onMove) {
@@ -835,12 +862,13 @@
     }
     dragArea(cpSat, function (x, y) { hsv.s = x; hsv.v = 1 - y; cpRender(); });
     dragArea(cpHue, function (x) { hsv.h = x * 360; cpRender(); });
+    dragArea(cpAlpha, function (x) { hsv.a = clamp(x, 0.05, 1); cpRender(); });
 
     cpHex.addEventListener("input", function () {
       var v = cpHex.value.trim();
       if (v && v[0] !== "#") v = "#" + v;
       var rgb = hex2rgb(v);
-      if (rgb) { hsv = rgb2hsv(rgb[0], rgb[1], rgb[2]); cpRender(); }
+      if (rgb) { var na = hsv.a; hsv = rgb2hsv(rgb[0], rgb[1], rgb[2]); hsv.a = na; cpRender(); }
     });
 
     if (window.EyeDropper) {
@@ -848,7 +876,7 @@
       cpEye.addEventListener("click", function () {
         new window.EyeDropper().open().then(function (r) {
           var rgb = hex2rgb(r.sRGBHex);
-          if (rgb) { hsv = rgb2hsv(rgb[0], rgb[1], rgb[2]); cpRender(); }
+          if (rgb) { var na = hsv.a; hsv = rgb2hsv(rgb[0], rgb[1], rgb[2]); hsv.a = na; cpRender(); }
         }).catch(function () {});
       });
     }
@@ -857,11 +885,12 @@
     cpDone.addEventListener("click", closePicker);
     cp.addEventListener("pointerdown", function (e) { if (e.target === cp) closePicker(); });
 
-    function openPicker(startHex) {
+    function openPicker(startHex, startAlpha) {
       var rgb = hex2rgb(startHex || customHex) || [232, 53, 43];
       hsv = rgb2hsv(rgb[0], rgb[1], rgb[2]);
+      hsv.a = startAlpha != null ? startAlpha : customAlpha;
       cp.hidden = false;
-      requestAnimationFrame(function () { cpRender(false); useCustom(rgb2hex(rgb[0], rgb[1], rgb[2])); });
+      requestAnimationFrame(function () { cpRender(false); useCustom(rgb2hex(rgb[0], rgb[1], rgb[2]), hsv.a); });
     }
 
     var szWrap = document.getElementById("sizes"), szEls = [];
@@ -935,6 +964,7 @@
         live = {
           type: "stroke",
           color: st.erasing ? PAPER : st.color,
+          alpha: st.erasing ? 1 : st.alpha,
           size: st.erasing ? st.size * 2.4 : st.size,
           pts: [{ x: w.x, y: w.y }]
         };
@@ -943,6 +973,7 @@
           type: "shape",
           kind: tool,
           color: st.erasing ? PAPER : st.color,
+          alpha: st.erasing ? 1 : st.alpha,
           size: st.erasing ? st.size * 2.4 : st.size,
           a: { x: w.x, y: w.y },
           b: { x: w.x, y: w.y }
@@ -1005,7 +1036,8 @@
         var si = (sy * w + sx) * 4;
         var tr = src[si], tg = src[si + 1], tb = src[si + 2];
         var f = st.erasing ? hexRgb(PAPER) : hexRgb(st.color);
-        if (Math.abs(tr - f[0]) + Math.abs(tg - f[1]) + Math.abs(tb - f[2]) < 10) return;
+        var fA = st.erasing ? 255 : Math.round((st.alpha == null ? 1 : st.alpha) * 255);
+        if (fA === 255 && Math.abs(tr - f[0]) + Math.abs(tg - f[1]) + Math.abs(tb - f[2]) < 10) return;
 
         var stamp = document.createElement("canvas");
         stamp.width = w; stamp.height = h;
@@ -1020,7 +1052,7 @@
           seen[p] = 1;
           var k = p * 4;
           if (Math.abs(src[k] - tr) + Math.abs(src[k + 1] - tg) + Math.abs(src[k + 2] - tb) > tol) continue;
-          out[k] = f[0]; out[k + 1] = f[1]; out[k + 2] = f[2]; out[k + 3] = 255;
+          out[k] = f[0]; out[k + 1] = f[1]; out[k + 2] = f[2]; out[k + 3] = fA;
           var x = p % w, y = (p - x) / w;
           if (x + 1 < w) stack.push(p + 1);
           if (x - 1 >= 0) stack.push(p - 1);
