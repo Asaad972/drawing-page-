@@ -159,6 +159,16 @@
   .brk { flex-basis: 100%; height: 0; }
   @media (min-width: 620px) { .brk { display: none; } }
 
+  #swatches {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: min(520px, calc(100vw - 44px));
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  #swatches::-webkit-scrollbar { display: none; }
+
   .swatch {
     flex: 0 0 auto;
     width: 32px;
@@ -173,6 +183,20 @@
     box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ink);
   }
   .swatch.eraser { background: #fbfaf6 !important; display: grid; place-items: center; font-size: 14px; }
+  .swatch.custom {
+    background: conic-gradient(from 90deg, #f33, #fd0, #4d4, #2ad, #64f, #f4c, #f33);
+    position: relative;
+  }
+  .swatch.custom input {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
 
   .pill {
     flex: 0 0 auto;
@@ -563,9 +587,14 @@
 
     // ---- palette / tools ----------------------------------
     var COLORS = [
-      ["Ink", "#17141d"], ["Grey", "#8b859c"], ["Red", "#e8532e"], ["Orange", "#f08a3c"],
-      ["Gold", "#e8a63d"], ["Green", "#2e9e6b"], ["Teal", "#2ea7a0"], ["Blue", "#3d7fe0"],
-      ["Indigo", "#5a4fcf"], ["Purple", "#9457d1"], ["Pink", "#e0609f"], ["Brown", "#8a5a3c"]
+      ["Black", "#000000"], ["Ink", "#17141d"], ["Charcoal", "#3a3a44"], ["Grey", "#8b859c"],
+      ["Silver", "#c9c6d4"], ["White", "#ffffff"],
+      ["Maroon", "#7a1420"], ["Crimson", "#c81e2e"], ["Red", "#e8352b"], ["Coral", "#ff6f5e"],
+      ["Orange", "#f08a3c"], ["Amber", "#f5a623"], ["Gold", "#e8b93d"], ["Yellow", "#f5df3d"],
+      ["Lime", "#9ccb3b"], ["Green", "#3aa657"], ["Emerald", "#1f8a5f"], ["Teal", "#2ea7a0"],
+      ["Sky", "#4aa8e0"], ["Blue", "#3d7fe0"], ["Navy", "#26306e"], ["Indigo", "#5a4fcf"],
+      ["Purple", "#9457d1"], ["Magenta", "#c93fb0"], ["Pink", "#e0609f"], ["Rose", "#ff9ec7"],
+      ["Brown", "#8a5a3c"], ["Tan", "#c99a6a"]
     ];
     var SIZES = [2, 5, 10, 20];
     var st = { color: COLORS[0][1], size: SIZES[1], erasing: false };
@@ -582,10 +611,30 @@
       b.setAttribute("aria-label", c[0]);
       b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
       b.addEventListener("click", function () {
-        st.color = c[1]; st.erasing = false; setPressed(swEls.concat([erB]), b);
+        st.color = c[1]; st.erasing = false; setPressed(swEls.concat([customB, erB]), b);
       });
       swWrap.appendChild(b); swEls.push(b);
     });
+
+    // "any colour" — native picker behind a rainbow swatch
+    var customB = document.createElement("span");
+    customB.className = "swatch custom";
+    customB.setAttribute("role", "button");
+    customB.setAttribute("aria-label", "Custom colour");
+    customB.setAttribute("aria-pressed", "false");
+    var customInput = document.createElement("input");
+    customInput.type = "color";
+    customInput.value = "#e8352b";
+    customInput.setAttribute("aria-label", "Pick any colour");
+    customB.appendChild(customInput);
+    customInput.addEventListener("input", function () {
+      st.color = customInput.value;
+      st.erasing = false;
+      customB.style.background = customInput.value;
+      setPressed(swEls.concat([customB, erB]), customB);
+    });
+    swWrap.appendChild(customB); swEls.push(customB);
+
     var erB = document.createElement("button");
     erB.type = "button"; erB.className = "swatch eraser"; erB.textContent = "🧽";
     erB.setAttribute("aria-label", "Eraser"); erB.setAttribute("aria-pressed", "false");
